@@ -111,7 +111,7 @@ async def capture_bubblemap(contract_address: str) -> str:
     options.add_argument('--window-size=1920,1080')
     
     driver = webdriver.Remote(
-        command_executor='http://localhost:4444',
+        command_executor='http://selenium-hub:4444',
         options=options
     )
     try:
