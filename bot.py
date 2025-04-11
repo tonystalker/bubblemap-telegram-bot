@@ -5,6 +5,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -103,24 +105,19 @@ async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
 
 async def capture_bubblemap(contract_address: str) -> str:
     """Takes a picture of the token's bubble map visualization from the website"""
-    # Set up a headless browser (runs in the background)
+    # Set up Chrome options for headless mode
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
     
-    selenium_host = os.getenv('SELENIUM_HOST', 'selenium-hub')
-    selenium_port = os.getenv('SELENIUM_PORT', '4444')
-    command_executor = f'http://{selenium_host}:{selenium_port}'
-    logger.info(f'Connecting to Selenium at {command_executor}')
-    
-    driver = webdriver.Remote(
-        command_executor=command_executor,
-        options=options
-    )
     try:
         logger.info(f"Starting screenshot capture for {contract_address}")
+        # Use Chrome directly, not the Remote WebDriver
+        driver = webdriver.Chrome(options=options)
+        
         # Visit the token's page and wait for it to load
         url = f"https://bubblemaps.io/token/{contract_address}"
         logger.info(f"Loading URL: {url}")
@@ -134,9 +131,13 @@ async def capture_bubblemap(contract_address: str) -> str:
         driver.save_screenshot(screenshot_path)
         logger.info("Screenshot saved successfully")
         return screenshot_path
+    except Exception as e:
+        logger.error(f"Error during screenshot capture: {e}")
+        raise
     finally:
         # Always close the browser when we're done
-        driver.quit()
+        if 'driver' in locals():
+            driver.quit()
 
 async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes a user's request to analyze a token and sends back the results"""
