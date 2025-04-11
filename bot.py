@@ -5,7 +5,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import aiohttp
 import json
@@ -108,7 +107,7 @@ async def capture_bubblemap(contract_address: str) -> str:
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver = webdriver.Chrome(service=Service('/usr/local/bin/chromedriver'), options=options)
     try:
         # Visit the token's page and wait for it to load
         driver.get(f"https://bubblemaps.io/token/{contract_address}")
