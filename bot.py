@@ -4,8 +4,10 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import aiohttp
 import json
 
@@ -103,19 +105,29 @@ async def capture_bubblemap(contract_address: str) -> str:
     """Takes a picture of the token's bubble map visualization from the website"""
     # Set up a headless browser (runs in the background)
     options = Options()
-    options.add_argument('--headless')
+    options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--window-size=1920,1080')
     
-    driver = webdriver.Chrome(service=Service('/usr/local/bin/chromedriver'), options=options)
+    driver = webdriver.Remote(
+        command_executor='http://localhost:4444',
+        options=options
+    )
     try:
+        logger.info(f"Starting screenshot capture for {contract_address}")
         # Visit the token's page and wait for it to load
-        driver.get(f"https://bubblemaps.io/token/{contract_address}")
+        url = f"https://bubblemaps.io/token/{contract_address}"
+        logger.info(f"Loading URL: {url}")
+        driver.get(url)
+        logger.info("Waiting for page to load...")
         driver.implicitly_wait(10)
         
         # Save the bubble map as an image
         screenshot_path = f"bubblemap_{contract_address}.png"
+        logger.info(f"Taking screenshot and saving to {screenshot_path}")
         driver.save_screenshot(screenshot_path)
+        logger.info("Screenshot saved successfully")
         return screenshot_path
     finally:
         # Always close the browser when we're done
@@ -152,18 +164,27 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         
         # Prepare analysis message
         token_type = "NFT Collection" if token_info.get('is_nft') else "Token"
+        # Format numeric values safely
+        market_cap = token_info.get('marketCap')
+        price = token_info.get('price')
+        volume = token_info.get('volume24h')
+        holder_count = token_info.get('holder_count')
+        whale_count = token_info.get('whale_count')
+        contract_holdings = token_info.get('contract_holder_percentage')
+        total_flow = token_info.get('total_flow')
+
         analysis = (
             f"📊 {token_type} Analysis for {token_info.get('full_name', 'Unknown')} ({token_info.get('symbol', 'N/A')})\n\n"
-            f"💰 Market Cap: ${token_info.get('marketCap', 'N/A'):,.2f}\n"
-            f"💵 Price: ${token_info.get('price', 'N/A'):,.8f}\n"
-            f"📈 24h Volume: ${token_info.get('volume24h', 'N/A'):,.2f}\n\n"
+            f"💰 Market Cap: ${market_cap:,.2f if isinstance(market_cap, (int, float)) else 'N/A'}\n"
+            f"💵 Price: ${price:,.8f if isinstance(price, (int, float)) else 'N/A'}\n"
+            f"📈 24h Volume: ${volume:,.2f if isinstance(volume, (int, float)) else 'N/A'}\n\n"
             f"🎯 Decentralization Metrics:\n"
             f"└ Score: {token_info.get('decentralization_score', 'N/A')}/100\n"
-            f"└ Total Holders: {token_info.get('holder_count', 'N/A'):,}\n"
-            f"└ Whale Holders: {token_info.get('whale_count', 'N/A')}\n"
+            f"└ Total Holders: {holder_count:,d if isinstance(holder_count, int) else holder_count}\n"
+            f"└ Whale Holders: {whale_count}\n"
             f"└ Cluster Count: {token_info.get('cluster_count', 'N/A')}\n"
-            f"└ Contract Holdings: {token_info.get('contract_holder_percentage', 'N/A'):.1f}%\n"
-            f"└ Transaction Flow: {token_info.get('total_flow', 'N/A'):,.0f}\n\n"
+            f"└ Contract Holdings: {contract_holdings:.1f if isinstance(contract_holdings, (int, float)) else 'N/A'}%\n"
+            f"└ Transaction Flow: {total_flow:,.0f if isinstance(total_flow, (int, float)) else 'N/A'}\n\n"
             f"Top 5 Holders:\n"
         )
         
@@ -194,7 +215,7 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         await processing_message.delete()
         
     except Exception as e:
-        logger.error(f"Error processing contract address: {e}")
+        logger.error(f"Error processing contract address: {e}", exc_info=True)
         await processing_message.edit_text("❌ An error occurred while processing your request. Please try again later.")
 
 def main():
