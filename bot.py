@@ -178,18 +178,28 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         contract_holdings = token_info.get('contract_holder_percentage')
         total_flow = token_info.get('total_flow')
 
+        def format_number(value, decimal_places=2, is_price=False):
+            if value is None:
+                return 'N/A'
+            try:
+                if is_price:
+                    return f"${value:,.8f}"
+                return f"${value:,.{decimal_places}f}"
+            except (TypeError, ValueError):
+                return 'N/A'
+
         analysis = (
             f"📊 {token_type} Analysis for {token_info.get('full_name', 'Unknown')} ({token_info.get('symbol', 'N/A')})\n\n"
-            f"💰 Market Cap: ${market_cap:,.2f if isinstance(market_cap, (int, float)) else 'N/A'}\n"
-            f"💵 Price: ${price:,.8f if isinstance(price, (int, float)) else 'N/A'}\n"
-            f"📈 24h Volume: ${volume:,.2f if isinstance(volume, (int, float)) else 'N/A'}\n\n"
+            f"💰 Market Cap: {format_number(market_cap)}\n"
+            f"💵 Price: {format_number(price, is_price=True)}\n"
+            f"📈 24h Volume: {format_number(volume)}\n\n"
             f"🎯 Decentralization Metrics:\n"
             f"└ Score: {token_info.get('decentralization_score', 'N/A')}/100\n"
-            f"└ Total Holders: {holder_count:,d if isinstance(holder_count, int) else holder_count}\n"
-            f"└ Whale Holders: {whale_count}\n"
+            f"└ Total Holders: {f'{holder_count:,}' if isinstance(holder_count, int) else 'N/A'}\n"
+            f"└ Whale Holders: {whale_count if whale_count is not None else 'N/A'}\n"
             f"└ Cluster Count: {token_info.get('cluster_count', 'N/A')}\n"
-            f"└ Contract Holdings: {contract_holdings:.1f if isinstance(contract_holdings, (int, float)) else 'N/A'}%\n"
-            f"└ Transaction Flow: {total_flow:,.0f if isinstance(total_flow, (int, float)) else 'N/A'}\n\n"
+            f"└ Contract Holdings: {f'{contract_holdings:.1f}%' if isinstance(contract_holdings, (int, float)) else 'N/A'}\n"
+            f"└ Transaction Flow: {f'{total_flow:,.0f}' if isinstance(total_flow, (int, float)) else 'N/A'}\n\n"
             f"Top 5 Holders:\n"
         )
         
