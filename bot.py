@@ -110,8 +110,13 @@ async def capture_bubblemap(contract_address: str) -> str:
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
     
+    selenium_host = os.getenv('SELENIUM_HOST', 'selenium-hub')
+    selenium_port = os.getenv('SELENIUM_PORT', '4444')
+    command_executor = f'http://{selenium_host}:{selenium_port}'
+    logger.info(f'Connecting to Selenium at {command_executor}')
+    
     driver = webdriver.Remote(
-        command_executor='http://selenium-hub:4444',
+        command_executor=command_executor,
         options=options
     )
     try:
