@@ -13,19 +13,19 @@ import json
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Set up logging so we can track what's happening with our bot
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Constants
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-BUBBLEMAPS_LEGACY_URL = "https://api-legacy.bubblemaps.io"
+# Important settings for our bot
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')  # Your bot's unique identifier
+BUBBLEMAPS_LEGACY_URL = "https://api-legacy.bubblemaps.io"  # Where we get token data from
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send a message when the command /start is issued."""
+    """Says hello and explains what the bot can do when someone starts a chat"""
     welcome_message = (
         "👋 Welcome to the Bubblemaps Bot!\n\n"
         "I can help you analyze any token supported by Bubblemaps. "
@@ -39,9 +39,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_message)
 
 async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
-    """Fetch token information from Bubblemaps Legacy API."""
+    """Gets all the important information about a token, like who owns it and how it's distributed"""
     async with aiohttp.ClientSession() as session:
-        # Get detailed data from legacy API
+        # First, let's get the token's data from Bubblemaps
         legacy_url = f"{BUBBLEMAPS_LEGACY_URL}/map-data?token={contract_address}&chain={chain}"
         async with session.get(legacy_url) as response:
             if response.status != 200:
@@ -67,39 +67,42 @@ async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
                 'name': node.get('name', 'Unknown')
             } for node in nodes[:5]]
             
-            # Calculate metrics
-            token_data['holder_count'] = len(nodes)
-            token_data['whale_count'] = sum(1 for n in nodes if n['percentage'] > 1)
+            # Let's count some important numbers about the token
+            token_data['holder_count'] = len(nodes)  # How many people hold this token
+            token_data['whale_count'] = sum(1 for n in nodes if n['percentage'] > 1)  # Big holders with >1%
             
-            # Calculate contract vs non-contract holder distribution
+            # Figure out how much is held by smart contracts vs regular wallets
             contract_holders = [n for n in nodes if n.get('is_contract', False)]
             contract_percentage = sum(h['percentage'] for h in contract_holders)
             token_data['contract_holder_percentage'] = contract_percentage
             
-            # Get transaction flow data
+            # Calculate how actively the token is being traded
             links = legacy_data.get('links', [])
             total_flow = sum(link['forward'] + link['backward'] for link in links)
             token_data['total_flow'] = total_flow
             
-            # Calculate decentralization score based on distribution
+            # Check if the token is concentrated in a few hands
             top_holder_percentage = sum(n['percentage'] for n in nodes[:3])
             token_data['top_holder_percentage'] = top_holder_percentage
             
-            # Simple scoring algorithm:
-            # - Lower top holder % is better (max 50 points)
-            # - More holders is better (max 30 points)
-            # - Lower contract % is better (max 20 points)
+            # Calculate a decentralization score (0-100)
+            # A higher score means the token is more evenly distributed
+            # We look at three things:
+            # 1. How much do the biggest holders own? (Less is better, up to 50 points)
+            # 2. How many different holders are there? (More is better, up to 30 points)
+            # 3. How much is in smart contracts? (Less is better, up to 20 points)
             score = (
-                max(0, 50 - (top_holder_percentage / 2)) +  # 50 points max
-                min(30, len(nodes) / 5) +                    # 30 points max
-                max(0, 20 - (contract_percentage / 5))       # 20 points max
+                max(0, 50 - (top_holder_percentage / 2)) +    # Up to 50 points for distribution
+                min(30, len(nodes) / 5) +                      # Up to 30 points for number of holders
+                max(0, 20 - (contract_percentage / 5))         # Up to 20 points for low contract holdings
             )
             token_data['decentralization_score'] = min(100, round(score))
             
             return token_data
 
 async def capture_bubblemap(contract_address: str) -> str:
-    """Capture screenshot of the token's bubble map."""
+    """Takes a picture of the token's bubble map visualization from the website"""
+    # Set up a headless browser (runs in the background)
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
@@ -107,24 +110,26 @@ async def capture_bubblemap(contract_address: str) -> str:
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     try:
-        # Load the bubble map page
+        # Visit the token's page and wait for it to load
         driver.get(f"https://bubblemaps.io/token/{contract_address}")
         driver.implicitly_wait(10)
         
-        # Take screenshot
+        # Save the bubble map as an image
         screenshot_path = f"bubblemap_{contract_address}.png"
         driver.save_screenshot(screenshot_path)
         return screenshot_path
     finally:
+        # Always close the browser when we're done
         driver.quit()
 
 async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle contract address input and return analysis."""
+    """Processes a user's request to analyze a token and sends back the results"""
+    # Split the message into contract address and blockchain (e.g., 'eth', 'bsc')
     message_parts = update.message.text.strip().split()
     contract_address = message_parts[0]
-    chain = message_parts[1] if len(message_parts) > 1 else 'eth'
+    chain = message_parts[1] if len(message_parts) > 1 else 'eth'  # Default to Ethereum if not specified
     
-    # Validate chain
+    # Make sure they specified a valid blockchain
     valid_chains = ['eth', 'bsc', 'ftm', 'avax', 'cro', 'arbi', 'poly', 'base', 'sol', 'sonic']
     if chain not in valid_chains:
         await update.message.reply_text(
@@ -194,15 +199,15 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         await processing_message.edit_text("❌ An error occurred while processing your request. Please try again later.")
 
 def main():
-    """Start the bot."""
-    # Create the Application
+    """Sets up and starts the Telegram bot"""
+    # Create a new bot with our token
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))
+    # Tell the bot what to do with different types of messages
+    application.add_handler(CommandHandler("start", start))  # Handle /start command
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))  # Handle contract addresses
 
-    # Start the Bot
+    # Start listening for messages
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
