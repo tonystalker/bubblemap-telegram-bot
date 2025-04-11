@@ -4,18 +4,6 @@ services:
     build: .
     environment:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
-      - SELENIUM_HOST=localhost
-      - SELENIUM_PORT=4444
-    ports:
-      - "4444:4444"
-    command: python bot.py
-
-  chrome:
-    image: selenium/standalone-chrome:latest
-    ports:
-      - "4444:4444"
-    shm_size: '2g'
-    environment:
-      - START_XVFB=false
     volumes:
       - /dev/shm:/dev/shm
+    shm_size: '2g'
