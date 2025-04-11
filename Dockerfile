@@ -3,6 +3,7 @@ FROM python:3.12-slim
 # Install Chrome and required dependencies
 RUN apt-get update && apt-get install -y \
     wget \
+    curl \
     gnupg \
     unzip \
     xvfb \
