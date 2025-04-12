@@ -20,6 +20,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import aiohttp
+import time
 
 # Configuration
 load_dotenv()
@@ -61,8 +62,10 @@ async def get_market_data(addr: str, chain: str) -> dict:
     async with aiohttp.ClientSession() as session:
         url = f"{COINGECKO_API_URL}/coins/{platform}/contract/{addr}"
         try:
-            async with session.get(url) as resp:
+            # Add timeout to prevent hanging
+            async with session.get(url, timeout=10) as resp:
                 if resp.status != 200:
+                    logger.warning(f"CoinGecko API returned status {resp.status} for {addr}")
                     return {}
                 data = await resp.json()
                 market = data.get('market_data', {})
@@ -72,6 +75,9 @@ async def get_market_data(addr: str, chain: str) -> dict:
                     'volume_24h': market.get('total_volume', {}).get('usd'),
                     'price_change_24h': market.get('price_change_percentage_24h')
                 }
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting market data for {addr}")
+            return {}
         except Exception as e:
             logger.error(f"Market data error: {e}")
             return {}
@@ -80,28 +86,32 @@ async def get_token_info(addr: str, chain: str = 'eth') -> dict:
     """Fetch token info from Bubblemaps."""
     async with aiohttp.ClientSession() as session:
         try:
-            # Get metadata
+            # Get metadata with timeout
             meta_url = f"{BUBBLEMAPS_API_URL}/map-metadata?token={addr}&chain={chain}"
-            async with session.get(meta_url) as resp:
+            async with session.get(meta_url, timeout=10) as resp:
                 if resp.status != 200:
+                    logger.warning(f"Bubblemaps metadata API returned status {resp.status} for {addr}")
                     return None
                 meta = await resp.json()
                 if not meta:
+                    logger.warning(f"Empty metadata response for {addr}")
                     return None
                     
-            # Get data
+            # Get data with timeout
             data_url = f"{BUBBLEMAPS_API_URL}/map-data?token={addr}&chain={chain}"
-            async with session.get(data_url) as resp:
+            async with session.get(data_url, timeout=10) as resp:
                 if resp.status != 200:
+                    logger.warning(f"Bubblemaps data API returned status {resp.status} for {addr}")
                     return None
                 data = await resp.json()
                 if not data:
+                    logger.warning(f"Empty data response for {addr}")
                     return None
                 
                 return {
-                    'name': meta.get('name'),
-                    'symbol': meta.get('symbol'),
-                    'full_name': meta.get('name'),  # For consistency with the analysis function
+                    'name': meta.get('name', 'Unknown'),
+                    'symbol': meta.get('symbol', 'N/A'),
+                    'full_name': meta.get('name', 'Unknown'),
                     'total_supply': meta.get('total_supply'),
                     'decentralization_score': data.get('decentralization_score'),
                     'percent_in_cexs': data.get('percent_in_cexs'),
@@ -114,6 +124,9 @@ async def get_token_info(addr: str, chain: str = 'eth') -> dict:
                     'is_nft': meta.get('is_nft', False)
                 }
                     
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting token info for {addr}")
+            return None
         except Exception as e:
             logger.error(f"Token info error: {e}")
             return None
@@ -141,16 +154,18 @@ async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
         
         # Wait for specific elements to be visible
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "bubblemaps-canvas"))
             )
             # Additional wait to ensure visualization is rendered
-            await asyncio.sleep(5)
+            await asyncio.sleep(8)  # Increased wait time
         except Exception as e:
             logger.warning(f"Timeout waiting for elements: {e}")
+            # Continue anyway - we'll try to take the screenshot
         
         # Save the bubble map as an image
-        screenshot_path = f"bubblemap_{contract_address}.png"
+        timestamp = int(time.time())
+        screenshot_path = f"bubblemap_{contract_address}_{timestamp}.png"
         logger.info(f"Taking screenshot and saving to {screenshot_path}")
         driver.save_screenshot(screenshot_path)
         logger.info("Screenshot saved successfully")
@@ -187,39 +202,58 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             await processing_message.edit_text(f"❌ Invalid chain. Supported: {', '.join(CHAIN_TO_PLATFORM.keys())}")
             return
         
-        # Fetch data
-        token_info, market_data = await asyncio.gather(
-            get_token_info(addr, chain),
-            get_market_data(addr, chain)
-        )
+        # Fetch data concurrently with extended timeout
+        try:
+            token_info, market_data = await asyncio.gather(
+                get_token_info(addr, chain),
+                get_market_data(addr, chain),
+                return_exceptions=True
+            )
+            
+            # Handle exceptions
+            if isinstance(token_info, Exception):
+                logger.error(f"Error fetching token info: {token_info}")
+                token_info = None
+                
+            if isinstance(market_data, Exception):
+                logger.error(f"Error fetching market data: {market_data}")
+                market_data = {}
+        except Exception as e:
+            logger.error(f"Data fetch error: {e}")
+            token_info, market_data = None, {}
         
+        # Check if we have at least basic token info
         if token_info is None:
-            await processing_message.edit_text("❌ Token not found or not supported")
+            await processing_message.edit_text("❌ Token not found or not supported on Bubblemaps")
             return
             
-        # Merge market data into token info
-        token_info.update(market_data or {})
+        # Create combined data dictionary
+        combined_data = {**token_info}
+        if market_data:
+            combined_data.update(market_data)
         
-        # Capture bubble map
-        screenshot_path = await capture_bubblemap(addr, chain)
+        # Start screenshot capture in the background
+        screenshot_task = asyncio.create_task(capture_bubblemap(addr, chain))
         
         # Prepare analysis message
-        token_type = "NFT Collection" if token_info.get('is_nft') else "Token"
+        token_type = "NFT Collection" if combined_data.get('is_nft') else "Token"
         # Get values from combined data
-        market_cap = token_info.get('market_cap')
-        price = token_info.get('price')
-        volume = token_info.get('volume_24h')
-        price_change = token_info.get('price_change_24h')
-        holder_count = token_info.get('holder_count')
-        whale_count = token_info.get('whale_count')
-        contract_holdings = token_info.get('contract_holder_percentage')
-        total_flow = token_info.get('total_flow')
+        market_cap = combined_data.get('market_cap')
+        price = combined_data.get('price')
+        volume = combined_data.get('volume_24h')
+        price_change = combined_data.get('price_change_24h')
+        holder_count = combined_data.get('holder_count')
+        whale_count = combined_data.get('whale_count')
+        cex_holdings = combined_data.get('percent_in_cexs')
+        contract_holdings = combined_data.get('contract_holder_percentage')
+        total_flow = combined_data.get('total_flow')
+        decentralization_score = combined_data.get('decentralization_score')
 
         def format_number(value, decimal_places=2, is_price=False):
             if value is None:
                 return 'N/A'
             try:
-                if is_price:
+                if is_price and value < 0.01:
                     return f"${value:,.8f}"
                 return f"${value:,.{decimal_places}f}"
             except (TypeError, ValueError):
@@ -229,60 +263,109 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         def format_percent(value):
             if value is None:
                 return 'N/A'
-            return f'{value:.1f}%'
+            try:
+                return f'{value:.1f}%'
+            except (TypeError, ValueError):
+                return 'N/A'
 
         # Format the last update time
-        last_update = token_info.get('last_update')
+        last_update = combined_data.get('last_update')
         if last_update:
             try:
                 dt = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
                 last_update_str = dt.strftime('%Y-%m-%d %H:%M UTC')
-            except:
+            except Exception as e:
+                logger.error(f"Error formatting date: {e}")
                 last_update_str = 'Unknown'
         else:
             last_update_str = 'Unknown'
 
         analysis = (
-            f"📊 {token_type} Analysis for {token_info.get('full_name', 'Unknown')} ({token_info.get('symbol', 'N/A')})\n\n"
+            f"📊 {token_type} Analysis for {combined_data.get('full_name', 'Unknown')} ({combined_data.get('symbol', 'N/A')})\n\n"
             f"💰 Market Cap: {format_number(market_cap)}\n"
             f"💵 Price: {format_number(price, is_price=True)}\n"
             f"📈 24h Volume: {format_number(volume)}\n"
-            f"📊 24h Change: {f'{price_change:+.2f}%' if price_change else 'N/A'}\n\n"
-            f"🎯 Decentralization Metrics:\n"
-            f"└ Score: {token_info.get('decentralization_score', 'N/A')}/100\n"
-            f"└ Total Holders: {f'{holder_count:,}' if isinstance(holder_count, int) else 'N/A'}\n"
-            f"└ Whale Holders: {whale_count if whale_count is not None else 'N/A'}\n"
-            f"└ CEX Holdings: {format_percent(token_info.get('percent_in_cexs'))}\n"
-            f"└ Contract Holdings: {format_percent(token_info.get('contract_holder_percentage'))}\n"
-            f"└ Transaction Flow: {f'{total_flow:,.0f}' if isinstance(total_flow, (int, float)) else 'N/A'}\n"
-            f"└ Last Update: {last_update_str}\n\n"
-            f"Top 5 Holders:\n"
         )
         
-        # Add top holders information with names and contract status
-        for idx, holder in enumerate(token_info.get('top_holders', []), 1):
-            percentage = holder.get('percentage', 0)
-            amount = holder.get('amount', 0)
-            name = holder.get('name', 'Unknown')
-            address = holder.get('address', 'Unknown')
-            contract_status = '📜' if holder.get('is_contract') else '👤'
+        # Add price change only if it exists
+        if price_change is not None:
+            analysis += f"📊 24h Change: {price_change:+.2f}%\n\n"
+        else:
+            analysis += f"📊 24h Change: N/A\n\n"
             
-            analysis += (
-                f"{idx}. {contract_status} {name}\n"
-                f"   └ {address[:8]}...{address[-6:]}\n"
-                f"   └ {percentage:.2f}% ({amount:,.0f} tokens)\n"
-            )
+        # Add decentralization metrics section
+        analysis += f"🎯 Decentralization Metrics:\n"
+        
+        # Handle decentralization score specifically
+        if decentralization_score is not None:
+            analysis += f"└ Score: {decentralization_score}/100\n"
+        else:
+            analysis += f"└ Score: N/A/100\n"
+            
+        # Add other metrics
+        analysis += (
+            f"└ Total Holders: {f'{holder_count:,}' if isinstance(holder_count, int) else 'N/A'}\n"
+            f"└ Whale Holders: {whale_count if whale_count is not None else 'N/A'}\n"
+            f"└ CEX Holdings: {format_percent(cex_holdings)}\n"
+            f"└ Contract Holdings: {format_percent(contract_holdings)}\n"
+            f"└ Transaction Flow: {f'{total_flow:,.0f}' if isinstance(total_flow, (int, float)) else 'N/A'}\n"
+            f"└ Last Update: {last_update_str}\n\n"
+        )
+        
+        # Add top holders section
+        analysis += f"Top 5 Holders:\n"
+        
+        # Add top holders information with names and contract status
+        top_holders = combined_data.get('top_holders', [])
+        if top_holders:
+            for idx, holder in enumerate(top_holders, 1):
+                try:
+                    percentage = holder.get('percentage', 0)
+                    amount = holder.get('amount', 0)
+                    name = holder.get('name', 'Unknown')
+                    address = holder.get('address', 'Unknown')
+                    contract_status = '📜' if holder.get('is_contract') else '👤'
+                    
+                    analysis += (
+                        f"{idx}. {contract_status} {name}\n"
+                        f"   └ {address[:8]}...{address[-6:]}\n"
+                        f"   └ {percentage:.2f}% ({amount:,.0f} tokens)\n"
+                    )
+                except Exception as e:
+                    logger.error(f"Error formatting holder {idx}: {e}")
+                    analysis += f"{idx}. Error formatting holder data\n"
+        else:
+            analysis += "No holder data available\n"
         
         analysis += f"\n🔗 View on Bubblemaps: {BUBBLEMAPS_APP_URL}/{chain}/token/{addr}"
         
-        # Send analysis and bubble map
-        await update.message.reply_photo(
-            photo=open(screenshot_path, 'rb'),
-            caption=analysis
-        )
+        # Wait for screenshot
+        try:
+            screenshot_path = await asyncio.wait_for(screenshot_task, timeout=30)
+            
+            # Send analysis and bubble map
+            await update.message.reply_photo(
+                photo=open(screenshot_path, 'rb'),
+                caption=analysis
+            )
+            
+            # Clean up
+            try:
+                os.remove(screenshot_path)
+            except Exception as e:
+                logger.error(f"Error removing screenshot: {e}")
+        except asyncio.TimeoutError:
+            # If screenshot takes too long, send just the analysis
+            logger.error("Screenshot capture timed out")
+            await update.message.reply_text(
+                text=f"⚠️ Could not generate bubble map visualization\n\n{analysis}"
+            )
+        except Exception as e:
+            logger.error(f"Screenshot error: {e}")
+            await update.message.reply_text(
+                text=f"⚠️ Could not generate bubble map visualization\n\n{analysis}"
+            )
         
-        # Clean up
-        os.remove(screenshot_path)
         await processing_message.delete()
         
     except Exception as e:
