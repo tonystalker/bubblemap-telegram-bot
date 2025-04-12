@@ -1,36 +1,50 @@
+"""Telegram Bot for Token Analysis using Bubblemaps and CoinGecko APIs
+
+This bot provides detailed token analysis including:
+- Market data (price, volume, market cap)
+- Decentralization metrics
+- Token distribution visualization
+- Top holder analysis
+
+Usage:
+1. Start the bot with /start
+2. Send a contract address to analyze
+3. Optionally specify chain (e.g., 0x... eth)
+
+Supported chains: eth, bsc, ftm, avax, poly, arbi, base
+
+Author: Tony Stalker
+License: MIT
+"""
+
 import os
 import logging
-import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import aiohttp
 import json
 
-# Load environment variables
+# Configuration
 load_dotenv()
-
-# Set up logging so we can track what's happening with our bot
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Important settings for our bot
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')  # Your bot's unique identifier
-BUBBLEMAPS_API_URL = "https://api-legacy.bubblemaps.io"  # API endpoint
-BUBBLEMAPS_APP_URL = "https://app.bubblemaps.io"  # Web app URL
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3"  # CoinGecko API
+# API Settings
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == 'your_telegram_bot_token_here':
+    raise ValueError("Please set the TELEGRAM_TOKEN environment variable in .env file")
+BUBBLEMAPS_API_URL = "https://api-legacy.bubblemaps.io"
+BUBBLEMAPS_APP_URL = "https://app.bubblemaps.io"
+COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
 
-# Chain ID mapping for CoinGecko
+# Chain mappings for CoinGecko API
 CHAIN_TO_PLATFORM = {
     'eth': 'ethereum',
     'bsc': 'binance-smart-chain',
@@ -42,74 +56,91 @@ CHAIN_TO_PLATFORM = {
 }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Says hello and explains what the bot can do when someone starts a chat"""
+    """Handle the /start command and show welcome message.
+    
+    Args:
+        update: Telegram update object
+        context: Callback context
+    """
     welcome_message = (
         "👋 Welcome to the Bubblemaps Bot!\n\n"
-        "I can help you analyze any token supported by Bubblemaps. "
-        "Just send me a contract address, and I'll provide:\n"
-        "- Token bubble map visualization\n"
-        "- Market information\n"
-        "- Decentralization score\n"
-        "- Additional insights\n\n"
-        "Try it now by sending a contract address!"
+        "Send me a token contract address and I'll analyze:\n"
+        "- Token distribution visualization\n"
+        "- Market data (price, volume, market cap)\n"
+        "- Decentralization metrics\n"
+        "- Top holder analysis\n\n"
+        "Example: 0x... eth (or bsc, ftm, avax, etc)"
     )
     await update.message.reply_text(welcome_message)
 
 async def get_market_data(contract_address: str, chain: str) -> dict:
-    """Get token market data from CoinGecko"""
+    """Fetch token market data from CoinGecko API.
+    
+    Args:
+        contract_address: Token contract address
+        chain: Blockchain network (eth, bsc, etc)
+        
+    Returns:
+        dict: Market data including price, market cap, volume, and 24h change
+    """
     if chain not in CHAIN_TO_PLATFORM:
+        logger.warning(f"Unsupported chain: {chain}")
         return {}
         
     platform = CHAIN_TO_PLATFORM[chain]
     async with aiohttp.ClientSession() as session:
-        url = f"{COINGECKO_API_URL}/simple/token_price/{platform}/{contract_address}?include_market_cap=true&include_24hr_vol=true&include_24hr_change=true&include_last_updated_at=true"
+        coin_url = f"{COINGECKO_API_URL}/coins/{platform}/contract/{contract_address}"
         try:
-            async with session.get(url) as response:
+            async with session.get(coin_url) as response:
                 if response.status != 200:
-                    return {}
-                data = await response.json()
-                if not data:
+                    logger.error(f"CoinGecko API error: {response.status}")
                     return {}
                     
-                token_data = list(data.values())[0]
+                coin_data = await response.json()
+                market_data = coin_data.get('market_data', {})
+                
                 return {
-                    'price': token_data.get('usd'),
-                    'market_cap': token_data.get('usd_market_cap'),
-                    'volume_24h': token_data.get('usd_24h_vol'),
-                    'price_change_24h': token_data.get('usd_24h_change')
+                    'price': market_data.get('current_price', {}).get('usd'),
+                    'market_cap': market_data.get('market_cap', {}).get('usd'),
+                    'volume_24h': market_data.get('total_volume', {}).get('usd'),
+                    'price_change_24h': market_data.get('price_change_percentage_24h')
                 }
         except Exception as e:
-            logger.error(f"Error fetching market data: {e}")
+            logger.error(f"Failed to fetch market data: {e}")
             return {}
 
 async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
-    """Gets all the important information about a token, like who owns it and how it's distributed"""
+    """Fetch token information from Bubblemaps API.
+    
+    Args:
+        contract_address: Token contract address
+        chain: Blockchain network (eth, bsc, etc)
+        
+    Returns:
+        dict: Combined token data including metadata and distribution info
+        None: If token is not found or API error occurs
+    """
     async with aiohttp.ClientSession() as session:
-        # Get token's metadata first
+        # Fetch metadata
         metadata_url = f"{BUBBLEMAPS_API_URL}/map-metadata?token={contract_address}&chain={chain}"
         async with session.get(metadata_url) as response:
             if response.status != 200:
+                logger.error(f"Metadata API error: {response.status}")
                 return None
             metadata = await response.json()
             if metadata.get('status') != 'OK':
+                logger.error("Invalid metadata response")
                 return None
 
-        # Get detailed token data
-        legacy_url = f"{BUBBLEMAPS_API_URL}/map-data?token={contract_address}&chain={chain}"
-        async with session.get(legacy_url) as response:
+        # Fetch distribution data
+        data_url = f"{BUBBLEMAPS_API_URL}/map-data?token={contract_address}&chain={chain}"
+        async with session.get(data_url) as response:
             if response.status != 200:
+                logger.error(f"Data API error: {response.status}")
                 return None
-                
-            legacy_data = await response.json()
-            token_data = {
-                'symbol': legacy_data.get('symbol'),
-                'full_name': legacy_data.get('full_name'),
-                'is_nft': legacy_data.get('is_X721', False)
-            }
-            
-            # Get detailed holder information
-            nodes = legacy_data.get('nodes', [])
-            if not nodes:
+            token_data = await response.json()
+            if token_data.get('status') != 'OK':
+                logger.error("Invalid token data response")
                 return None
                 
             token_data['top_holders'] = [{
@@ -334,7 +365,13 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))  # Handle contract addresses
 
     # Start listening for messages
+    logger.info("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot stopped due to error: {e}", exc_info=True)

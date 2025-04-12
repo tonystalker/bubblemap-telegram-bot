@@ -18,20 +18,27 @@ A Telegram bot that provides token analysis using Bubblemaps API. Get instant ac
 - Chrome/Chromium browser (for Selenium)
 - Telegram Bot Token (get from @BotFather)
 
-## Installation
-
 1. Clone the repository:
 ```bash
-git clone [your-repo-url]
+git clone https://github.com/yourusername/bubblemaps-telegram-bot.git
 cd bubblemaps-telegram-bot
 ```
 
-2. Install required packages:
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: .\venv\Scripts\activate
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file in the project root with your credentials:
+4. Set up environment variables:
+```bash
+cp .env.example .env
+# Edit .env and add your Telegram bot token
 ```
 TELEGRAM_TOKEN=your_telegram_bot_token
 ```
