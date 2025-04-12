@@ -19,6 +19,7 @@ License: MIT
 
 import os
 import logging
+import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, Bot
@@ -236,30 +237,46 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             "❌ Please provide a valid contract address.\n"
             f"Format: <contract_address> <chain>"
         )
-        return
     
-    contract_address = message_parts[0].lower()
-    chain = message_parts[1].lower() if len(message_parts) > 1 else 'eth'
-    
-    # Basic validation of the contract address
-    if not contract_address.startswith('0x') or len(contract_address) != 42:
-        await update.message.reply_text(
-            "❌ Invalid contract address format.\n"
-            f"Format: <contract_address> <chain>"
-        )
-        return
-    
-    # Show processing message
-    processing_message = await update.message.reply_text("🔍 Analyzing token... Please wait.")
+    Args:
+        update: Telegram update object containing the message
+        context: Callback context
+        
+    The message should be in format: CONTRACT_ADDRESS [CHAIN]
+    Example: 0x... eth
+    If chain is not specified, defaults to 'eth'
+    """
+    processing_message = await update.message.reply_text("🕐 Processing your request...")
     
     try:
-        # Get token information and market data concurrently
+        # Parse input
+        text = update.message.text.lower().strip()
+        parts = text.split()
+        
+        if not parts:
+            await processing_message.edit_text("❌ Please provide a valid contract address")
+            return
+            
+        contract_address = parts[0]
+        chain = parts[1] if len(parts) > 1 else 'eth'
+        
+        if not contract_address.startswith('0x') or len(contract_address) != 42:
+            await processing_message.edit_text("❌ Invalid contract address format")
+            return
+            
+        if chain not in ['eth', 'bsc']:
+            await processing_message.edit_text(
+                "❌ Invalid chain. Supported chains: eth, bsc"
+            )
+            return
+        
+        # Fetch data concurrently
         token_info, market_data = await asyncio.gather(
             get_token_info(contract_address, chain),
             get_market_data(contract_address, chain)
         )
         
-        if not token_info:
+        # ... (rest of the function remains the same)
             await processing_message.edit_text("❌ Invalid contract address or token not found on Bubblemaps.")
             return
         
@@ -355,8 +372,8 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Error processing contract address: {e}", exc_info=True)
         await processing_message.edit_text("❌ An error occurred while processing your request. Please try again later.")
 
-def main():
-    """Sets up and starts the Telegram bot"""
+async def main() -> None:
+    """Sets up and starts the Telegram bot."""
     try:
         # Create application with defaults
         application = Application.builder()\
@@ -376,10 +393,12 @@ def main():
         
         # Start bot
         logger.info("Starting bot...")
-        application.run_polling(
+        await application.initialize()
+        await application.start()
+        await application.run_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES,
-            pool_timeout=None
+            close_loop=False
         )
         
     except Exception as e:
@@ -387,11 +406,14 @@ def main():
         raise
 
 if __name__ == '__main__':
-    # Make sure no other instances are running
-    import os
-    import sys
-    import psutil
+    # Configure logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    logger = logging.getLogger(__name__)
     
+    # Make sure no other instances are running
     current_process = psutil.Process()
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
@@ -404,7 +426,7 @@ if __name__ == '__main__':
             pass
     
     try:
-        main()
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
