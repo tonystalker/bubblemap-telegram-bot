@@ -21,7 +21,7 @@ import os
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -357,21 +357,56 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
 
 def main():
     """Sets up and starts the Telegram bot"""
-    # Create a new bot with our token
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Tell the bot what to do with different types of messages
-    application.add_handler(CommandHandler("start", start))  # Handle /start command
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))  # Handle contract addresses
-
-    # Start listening for messages
-    logger.info("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # Create application with defaults
+        application = Application.builder()\
+            .token(TELEGRAM_TOKEN)\
+            .concurrent_updates(True)\
+            .connection_pool_size(8)\
+            .connect_timeout(30.0)\
+            .pool_timeout(30.0)\
+            .read_timeout(30.0)\
+            .write_timeout(30.0)\
+            .get_updates_connection_pool_size(8)\
+            .build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))
+        
+        # Start bot
+        logger.info("Starting bot...")
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+            pool_timeout=None
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}", exc_info=True)
+        raise
 
 if __name__ == '__main__':
+    # Make sure no other instances are running
+    import os
+    import sys
+    import psutil
+    
+    current_process = psutil.Process()
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if proc.info['pid'] != current_process.pid and \
+               'python' in proc.info['name'] and \
+               any('bot.py' in cmd for cmd in (proc.info['cmdline'] or [])):
+                logger.info(f"Killing existing bot process: {proc.info['pid']}")
+                proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    
     try:
         main()
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Bot stopped due to error: {e}", exc_info=True)
+        sys.exit(1)
