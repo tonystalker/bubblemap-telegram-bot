@@ -7,6 +7,7 @@ Usage: /start, then send contract address (e.g. 0x1234... eth)
 """
 
 import os
+import sys
 import logging
 import asyncio
 from datetime import datetime
@@ -100,6 +101,7 @@ async def get_token_info(addr: str, chain: str = 'eth') -> dict:
                 return {
                     'name': meta.get('name'),
                     'symbol': meta.get('symbol'),
+                    'full_name': meta.get('name'),  # For consistency with the analysis function
                     'total_supply': meta.get('total_supply'),
                     'decentralization_score': data.get('decentralization_score'),
                     'percent_in_cexs': data.get('percent_in_cexs'),
@@ -108,32 +110,13 @@ async def get_token_info(addr: str, chain: str = 'eth') -> dict:
                     'holder_count': data.get('holder_count'),
                     'whale_count': data.get('whale_count'),
                     'top_holders': data.get('top_holders', [])[:5],
-                    'last_update': data.get('last_update')
+                    'last_update': data.get('last_update'),
+                    'is_nft': meta.get('is_nft', False)
                 }
                     
         except Exception as e:
             logger.error(f"Token info error: {e}")
             return None
-            
-            # Calculate transaction flow
-            links = legacy_data.get('links', [])
-            total_flow = sum(link['forward'] + link['backward'] for link in links)
-            token_data['total_flow'] = total_flow
-            
-            # Calculate a decentralization score (0-100)
-            # A higher score means the token is more evenly distributed
-            # We look at three things:
-            # 1. How much do the biggest holders own? (Less is better, up to 50 points)
-            # 2. How many different holders are there? (More is better, up to 30 points)
-            # 3. How much is in smart contracts? (Less is better, up to 20 points)
-            score = (
-                max(0, 50 - (token_data.get('top_holders', [])[0]['percentage'] / 2)) +    # Up to 50 points for distribution
-                min(30, len(nodes) / 5) +                      # Up to 30 points for number of holders
-                max(0, 20 - (token_data.get('contract_holder_percentage', 0) / 5))         # Up to 20 points for low contract holdings
-            )
-            token_data['decentralization_score'] = min(100, round(score))
-            
-            return token_data
 
 async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
     """Takes a picture of the token's bubble map visualization from the website"""
@@ -181,6 +164,8 @@ async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
             driver.quit()
 
 async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Send a processing message first
+    processing_message = await update.message.reply_text("⏳ Processing your request...")
     
     try:
         # Parse input
@@ -188,18 +173,18 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         parts = text.split()
         
         if not parts:
-            await msg.edit_text("❌ Please provide a contract address")
+            await processing_message.edit_text("❌ Please provide a contract address")
             return
             
         addr = parts[0]
         chain = parts[1] if len(parts) > 1 else 'eth'
         
         if not addr.startswith('0x') or len(addr) != 42:
-            await msg.edit_text("❌ Invalid address format")
+            await processing_message.edit_text("❌ Invalid address format")
             return
             
         if chain not in CHAIN_TO_PLATFORM:
-            await msg.edit_text(f"❌ Invalid chain. Supported: {', '.join(CHAIN_TO_PLATFORM.keys())}")
+            await processing_message.edit_text(f"❌ Invalid chain. Supported: {', '.join(CHAIN_TO_PLATFORM.keys())}")
             return
         
         # Fetch data
@@ -208,11 +193,15 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             get_market_data(addr, chain)
         )
         
+        if token_info is None:
+            await processing_message.edit_text("❌ Token not found or not supported")
+            return
+            
         # Merge market data into token info
-        token_info.update(market_data)
+        token_info.update(market_data or {})
         
         # Capture bubble map
-        screenshot_path = await capture_bubblemap(contract_address, chain)
+        screenshot_path = await capture_bubblemap(addr, chain)
         
         # Prepare analysis message
         token_type = "NFT Collection" if token_info.get('is_nft') else "Token"
@@ -284,7 +273,7 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
                 f"   └ {percentage:.2f}% ({amount:,.0f} tokens)\n"
             )
         
-        analysis += f"\n🔗 View on Bubblemaps: {BUBBLEMAPS_APP_URL}/{chain}/token/{contract_address}"
+        analysis += f"\n🔗 View on Bubblemaps: {BUBBLEMAPS_APP_URL}/{chain}/token/{addr}"
         
         # Send analysis and bubble map
         await update.message.reply_photo(
@@ -298,7 +287,10 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         
     except Exception as e:
         logger.error(f"Error processing contract address: {e}", exc_info=True)
-        await processing_message.edit_text("❌ An error occurred while processing your request. Please try again later.")
+        if 'processing_message' in locals():
+            await processing_message.edit_text("❌ An error occurred while processing your request. Please try again later.")
+        else:
+            await update.message.reply_text("❌ An error occurred while processing your request. Please try again later.")
 
 async def main() -> None:
     """Setup and run the bot."""
@@ -318,8 +310,6 @@ async def main() -> None:
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))
         
         logger.info("Starting bot...")
-        await app.initialize()
-        await app.start()
         await app.run_polling(drop_pending_updates=True)
         
     except Exception as e:
