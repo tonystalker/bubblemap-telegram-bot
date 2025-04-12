@@ -292,40 +292,22 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         else:
             await update.message.reply_text("❌ An error occurred while processing your request. Please try again later.")
 
-async def main() -> None:
-    """Setup and run the bot."""
-    try:
-        app = Application.builder()\
-            .token(TELEGRAM_TOKEN)\
-            .concurrent_updates(True)\
-            .connection_pool_size(8)\
-            .connect_timeout(30.0)\
-            .pool_timeout(30.0)\
-            .read_timeout(30.0)\
-            .write_timeout(30.0)\
-            .get_updates_connection_pool_size(8)\
-            .build()
-        
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))
-        
-        logger.info("Starting bot...")
-        await app.run_polling(drop_pending_updates=True)
-        
-    except Exception as e:
-        logger.error(f"Bot error: {e}", exc_info=True)
-        raise
+def main():
+    """Set up and run the bot without async/await."""
+    # Create the Application
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_contract_address))
+    
+    # Run the bot until the user presses Ctrl-C
+    logger.info("Starting bot...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    # Configure logging
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
-    logger = logging.getLogger(__name__)
-    
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
