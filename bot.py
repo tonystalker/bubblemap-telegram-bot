@@ -26,9 +26,9 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TELEGRAM_TOKEN:
     raise ValueError("Please set TELEGRAM_TOKEN in .env file")
     
-BUBBLEMAPS_API_URL = "[invalid url, do not cite]
-BUBBLEMAPS_APP_URL = "[invalid url, do not cite]
-COINGECKO_API_URL = "[invalid url, do not cite]
+BUBBLEMAPS_API_URL = "https://api-legacy.bubblemaps.io"
+BUBBLEMAPS_APP_URL = "https://app.bubblemaps.io"
+COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
 
 # Chain mappings
 CHAIN_TO_PLATFORM = {
