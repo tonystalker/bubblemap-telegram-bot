@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -43,7 +44,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
     """Gets all the important information about a token, like who owns it and how it's distributed"""
     async with aiohttp.ClientSession() as session:
-        # First, let's get the token's data from Bubblemaps
+        # Get token's metadata first
+        metadata_url = f"{BUBBLEMAPS_LEGACY_URL}/map-metadata?token={contract_address}&chain={chain}"
+        async with session.get(metadata_url) as response:
+            if response.status != 200:
+                return None
+            metadata = await response.json()
+            if metadata.get('status') != 'OK':
+                return None
+
+        # Get detailed token data
         legacy_url = f"{BUBBLEMAPS_LEGACY_URL}/map-data?token={contract_address}&chain={chain}"
         async with session.get(legacy_url) as response:
             if response.status != 200:
@@ -69,23 +79,21 @@ async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
                 'name': node.get('name', 'Unknown')
             } for node in nodes[:5]]
             
-            # Let's count some important numbers about the token
-            token_data['holder_count'] = len(nodes)  # How many people hold this token
+            # Get metadata information
+            token_data['decentralization_score'] = metadata.get('decentralisation_score')
+            identified_supply = metadata.get('identified_supply', {})
+            token_data['percent_in_cexs'] = identified_supply.get('percent_in_cexs')
+            token_data['contract_holder_percentage'] = identified_supply.get('percent_in_contracts')
+            token_data['last_update'] = metadata.get('dt_update')
+            
+            # Calculate token metrics
+            token_data['holder_count'] = len(nodes)  # Total holders
             token_data['whale_count'] = sum(1 for n in nodes if n['percentage'] > 1)  # Big holders with >1%
             
-            # Figure out how much is held by smart contracts vs regular wallets
-            contract_holders = [n for n in nodes if n.get('is_contract', False)]
-            contract_percentage = sum(h['percentage'] for h in contract_holders)
-            token_data['contract_holder_percentage'] = contract_percentage
-            
-            # Calculate how actively the token is being traded
+            # Calculate transaction flow
             links = legacy_data.get('links', [])
             total_flow = sum(link['forward'] + link['backward'] for link in links)
             token_data['total_flow'] = total_flow
-            
-            # Check if the token is concentrated in a few hands
-            top_holder_percentage = sum(n['percentage'] for n in nodes[:3])
-            token_data['top_holder_percentage'] = top_holder_percentage
             
             # Calculate a decentralization score (0-100)
             # A higher score means the token is more evenly distributed
@@ -94,9 +102,9 @@ async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
             # 2. How many different holders are there? (More is better, up to 30 points)
             # 3. How much is in smart contracts? (Less is better, up to 20 points)
             score = (
-                max(0, 50 - (top_holder_percentage / 2)) +    # Up to 50 points for distribution
+                max(0, 50 - (token_data.get('top_holders', [])[0]['percentage'] / 2)) +    # Up to 50 points for distribution
                 min(30, len(nodes) / 5) +                      # Up to 30 points for number of holders
-                max(0, 20 - (contract_percentage / 5))         # Up to 20 points for low contract holdings
+                max(0, 20 - (token_data.get('contract_holder_percentage', 0) / 5))         # Up to 20 points for low contract holdings
             )
             token_data['decentralization_score'] = min(100, round(score))
             
@@ -188,6 +196,23 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             except (TypeError, ValueError):
                 return 'N/A'
 
+        # Format percentages nicely
+        def format_percent(value):
+            if value is None:
+                return 'N/A'
+            return f'{value:.1f}%'
+
+        # Format the last update time
+        last_update = token_info.get('last_update')
+        if last_update:
+            try:
+                dt = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
+                last_update_str = dt.strftime('%Y-%m-%d %H:%M UTC')
+            except:
+                last_update_str = 'Unknown'
+        else:
+            last_update_str = 'Unknown'
+
         analysis = (
             f"📊 {token_type} Analysis for {token_info.get('full_name', 'Unknown')} ({token_info.get('symbol', 'N/A')})\n\n"
             f"💰 Market Cap: {format_number(market_cap)}\n"
@@ -197,9 +222,10 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             f"└ Score: {token_info.get('decentralization_score', 'N/A')}/100\n"
             f"└ Total Holders: {f'{holder_count:,}' if isinstance(holder_count, int) else 'N/A'}\n"
             f"└ Whale Holders: {whale_count if whale_count is not None else 'N/A'}\n"
-            f"└ Cluster Count: {token_info.get('cluster_count', 'N/A')}\n"
-            f"└ Contract Holdings: {f'{contract_holdings:.1f}%' if isinstance(contract_holdings, (int, float)) else 'N/A'}\n"
-            f"└ Transaction Flow: {f'{total_flow:,.0f}' if isinstance(total_flow, (int, float)) else 'N/A'}\n\n"
+            f"└ CEX Holdings: {format_percent(token_info.get('percent_in_cexs'))}\n"
+            f"└ Contract Holdings: {format_percent(token_info.get('contract_holder_percentage'))}\n"
+            f"└ Transaction Flow: {f'{total_flow:,.0f}' if isinstance(total_flow, (int, float)) else 'N/A'}\n"
+            f"└ Last Update: {last_update_str}\n\n"
             f"Top 5 Holders:\n"
         )
         
