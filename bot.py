@@ -334,16 +334,6 @@ if __name__ == '__main__':
     )
     logger = logging.getLogger(__name__)
     
-    # Kill other instances
-    current_pid = os.getpid()
-    for proc in psutil.process_iter(['pid', 'cmdline']):
-        try:
-            if proc.info['pid'] != current_pid and \
-               any('bot.py' in cmd for cmd in (proc.info['cmdline'] or [])):
-                proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
