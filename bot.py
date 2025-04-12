@@ -14,6 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import aiohttp
 import time
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Configuration
 load_dotenv()
@@ -25,9 +26,9 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TELEGRAM_TOKEN:
     raise ValueError("Please set TELEGRAM_TOKEN in .env file")
     
-BUBBLEMAPS_API_URL = "https://api-legacy.bubblemaps.io"
-BUBBLEMAPS_APP_URL = "https://app.bubblemaps.io"
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
+BUBBLEMAPS_API_URL = "[invalid url, do not cite]
+BUBBLEMAPS_APP_URL = "[invalid url, do not cite]
+COINGECKO_API_URL = "[invalid url, do not cite]
 
 # Chain mappings
 CHAIN_TO_PLATFORM = {
@@ -150,16 +151,20 @@ async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
     options.add_argument('--window-size=1920,1080')
     
     try:
-        driver = webdriver.Chrome(options=options)
+        driver = webdriver.Chrome(ChromeDriverManager().install(), options=options)
         url = f"{BUBBLEMAPS_APP_URL}/{chain}/token/{contract_address}"
+        logger.info(f"Loading URL: {url}")
         driver.get(url)
-        WebDriverWait(driver, 20).until(
+        logger.info("Waiting for 'bubblemaps-canvas' element to be present...")
+        WebDriverWait(driver, 60).until(
             EC.presence_of_element_located((By.CLASS_NAME, "bubblemaps-canvas"))
         )
-        await asyncio.sleep(10)
+        logger.info("Element found, waiting for visualization to render...")
+        await asyncio.sleep(10)  # Wait for rendering
         timestamp = int(time.time())
         screenshot_path = f"bubblemap_{contract_address}_{timestamp}.png"
         driver.save_screenshot(screenshot_path)
+        logger.info(f"Screenshot saved: {screenshot_path}")
         return screenshot_path
     except Exception as e:
         logger.error(f"Error during screenshot capture: {e}", exc_info=True)
@@ -274,7 +279,7 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         analysis += f"\n🔗 View on Bubblemaps: {BUBBLEMAPS_APP_URL}/{chain}/token/{addr}"
         
         try:
-            screenshot_path = await asyncio.wait_for(screenshot_task, timeout=30)
+            screenshot_path = await asyncio.wait_for(screenshot_task, timeout=60)
             await update.message.reply_photo(
                 photo=open(screenshot_path, 'rb'),
                 caption=analysis
@@ -301,6 +306,18 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         else:
             await update.message.reply_text("❌ An error occurred while processing your request. Please try again later.")
 
+def format_number(value, decimal_places=2, is_price=False):
+    logger.info(f"Formatting number: {value}, is_price={is_price}")
+    if value is None:
+        return 'N/A'
+    try:
+        if is_price and value < 0.01:
+            return f"${value:,.8f}"
+        return f"${value:,.{decimal_places}f}"
+    except (TypeError, ValueError) as e:
+        logger.error(f"Error formatting number {value}: {e}")
+        return 'N/A'
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -315,15 +332,3 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"Bot error: {e}", exc_info=True)
         sys.exit(1)
-
-def format_number(value, decimal_places=2, is_price=False):
-    logger.info(f"Formatting number: {value}, is_price={is_price}")
-    if value is None:
-        return 'N/A'
-    try:
-        if is_price and value < 0.01:
-            return f"${value:,.8f}"
-        return f"${value:,.{decimal_places}f}"
-    except (TypeError, ValueError) as e:
-        logger.error(f"Error formatting number {value}: {e}")
-        return 'N/A'
