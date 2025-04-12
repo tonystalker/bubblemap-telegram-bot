@@ -10,6 +10,7 @@ import os
 import sys
 import logging
 import asyncio
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
@@ -43,6 +44,23 @@ CHAIN_TO_PLATFORM = {
     'base': 'base'
 }
 
+def debug_api_response(name, data, level="info"):
+    """Log API response data in a readable format"""
+    logger.info(f"--- {name} API Response ---")
+    if level == "debug":
+        # For full data dumps
+        logger.info(f"Full response: {json.dumps(data, indent=2)}")
+    elif isinstance(data, dict):
+        # For key information
+        for key, value in data.items():
+            if isinstance(value, dict):
+                logger.info(f"{key}: {json.dumps(value, indent=2)}")
+            else:
+                logger.info(f"{key}: {value}")
+    else:
+        logger.info(f"Data: {data}")
+    logger.info("------------------------")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
     await update.message.reply_text(
@@ -56,59 +74,108 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def get_market_data(addr: str, chain: str) -> dict:
     """Fetch token market data from CoinGecko."""
     if chain not in CHAIN_TO_PLATFORM:
+        logger.warning(f"Unsupported chain: {chain}")
         return {}
         
     platform = CHAIN_TO_PLATFORM[chain]
+    logger.info(f"Fetching market data for {addr} on {platform}")
+    
     async with aiohttp.ClientSession() as session:
         url = f"{COINGECKO_API_URL}/coins/{platform}/contract/{addr}"
+        logger.info(f"CoinGecko API URL: {url}")
+        
         try:
             # Add timeout to prevent hanging
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, timeout=15) as resp:
+                logger.info(f"CoinGecko API status: {resp.status}")
+                
                 if resp.status != 200:
                     logger.warning(f"CoinGecko API returned status {resp.status} for {addr}")
+                    # Try to read error message if any
+                    try:
+                        error_text = await resp.text()
+                        logger.warning(f"CoinGecko error response: {error_text[:200]}...")
+                    except:
+                        pass
                     return {}
+                
                 data = await resp.json()
+                debug_api_response("CoinGecko", data, level="debug")
+                
+                # Extract market data
                 market = data.get('market_data', {})
-                return {
+                result = {
                     'price': market.get('current_price', {}).get('usd'),
                     'market_cap': market.get('market_cap', {}).get('usd'),
                     'volume_24h': market.get('total_volume', {}).get('usd'),
                     'price_change_24h': market.get('price_change_percentage_24h')
                 }
+                
+                logger.info(f"Extracted market data: {result}")
+                return result
+                
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting market data for {addr}")
             return {}
         except Exception as e:
-            logger.error(f"Market data error: {e}")
+            logger.error(f"Market data error: {e}", exc_info=True)
             return {}
 
 async def get_token_info(addr: str, chain: str = 'eth') -> dict:
     """Fetch token info from Bubblemaps."""
+    logger.info(f"Fetching token info for {addr} on {chain}")
+    
     async with aiohttp.ClientSession() as session:
         try:
             # Get metadata with timeout
             meta_url = f"{BUBBLEMAPS_API_URL}/map-metadata?token={addr}&chain={chain}"
-            async with session.get(meta_url, timeout=10) as resp:
+            logger.info(f"Bubblemaps metadata URL: {meta_url}")
+            
+            async with session.get(meta_url, timeout=15) as resp:
+                logger.info(f"Bubblemaps metadata API status: {resp.status}")
+                
                 if resp.status != 200:
                     logger.warning(f"Bubblemaps metadata API returned status {resp.status} for {addr}")
+                    # Try to read error message if any
+                    try:
+                        error_text = await resp.text()
+                        logger.warning(f"Bubblemaps metadata error response: {error_text[:200]}...")
+                    except:
+                        pass
                     return None
+                
                 meta = await resp.json()
+                debug_api_response("Bubblemaps Metadata", meta)
+                
                 if not meta:
                     logger.warning(f"Empty metadata response for {addr}")
                     return None
                     
             # Get data with timeout
             data_url = f"{BUBBLEMAPS_API_URL}/map-data?token={addr}&chain={chain}"
-            async with session.get(data_url, timeout=10) as resp:
+            logger.info(f"Bubblemaps data URL: {data_url}")
+            
+            async with session.get(data_url, timeout=15) as resp:
+                logger.info(f"Bubblemaps data API status: {resp.status}")
+                
                 if resp.status != 200:
                     logger.warning(f"Bubblemaps data API returned status {resp.status} for {addr}")
+                    # Try to read error message if any
+                    try:
+                        error_text = await resp.text()
+                        logger.warning(f"Bubblemaps data error response: {error_text[:200]}...")
+                    except:
+                        pass
                     return None
+                
                 data = await resp.json()
+                debug_api_response("Bubblemaps Data", data)
+                
                 if not data:
                     logger.warning(f"Empty data response for {addr}")
                     return None
                 
-                return {
+                result = {
                     'name': meta.get('name', 'Unknown'),
                     'symbol': meta.get('symbol', 'N/A'),
                     'full_name': meta.get('name', 'Unknown'),
@@ -123,12 +190,15 @@ async def get_token_info(addr: str, chain: str = 'eth') -> dict:
                     'last_update': data.get('last_update'),
                     'is_nft': meta.get('is_nft', False)
                 }
+                
+                logger.info(f"Extracted token info: {result}")
+                return result
                     
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting token info for {addr}")
             return None
         except Exception as e:
-            logger.error(f"Token info error: {e}")
+            logger.error(f"Token info error: {e}", exc_info=True)
             return None
 
 async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
@@ -154,13 +224,14 @@ async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
         
         # Wait for specific elements to be visible
         try:
-            WebDriverWait(driver, 15).until(
+            WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "bubblemaps-canvas"))
             )
             # Additional wait to ensure visualization is rendered
-            await asyncio.sleep(8)  # Increased wait time
+            logger.info("Canvas element found, waiting for visualization to render...")
+            await asyncio.sleep(10)  # Increased wait time for better rendering
         except Exception as e:
-            logger.warning(f"Timeout waiting for elements: {e}")
+            logger.warning(f"Timeout or error waiting for elements: {e}")
             # Continue anyway - we'll try to take the screenshot
         
         # Save the bubble map as an image
@@ -171,7 +242,7 @@ async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
         logger.info("Screenshot saved successfully")
         return screenshot_path
     except Exception as e:
-        logger.error(f"Error during screenshot capture: {e}")
+        logger.error(f"Error during screenshot capture: {e}", exc_info=True)
         raise
     finally:
         # Always close the browser when we're done
@@ -202,25 +273,29 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             await processing_message.edit_text(f"❌ Invalid chain. Supported: {', '.join(CHAIN_TO_PLATFORM.keys())}")
             return
         
+        # Log the request
+        logger.info(f"Processing token request: {addr} on {chain}")
+        
         # Fetch data concurrently with extended timeout
         try:
-            token_info, market_data = await asyncio.gather(
-                get_token_info(addr, chain),
-                get_market_data(addr, chain),
-                return_exceptions=True
-            )
+            logger.info("Starting API data fetch")
+            token_info_future = get_token_info(addr, chain)
+            market_data_future = get_market_data(addr, chain)
             
-            # Handle exceptions
-            if isinstance(token_info, Exception):
-                logger.error(f"Error fetching token info: {token_info}")
-                token_info = None
-                
-            if isinstance(market_data, Exception):
-                logger.error(f"Error fetching market data: {market_data}")
-                market_data = {}
+            # Wait for both with individual error handling
+            token_info = await token_info_future
+            logger.info(f"Token info fetch completed: {'SUCCESS' if token_info else 'FAILED'}")
+            
+            market_data = await market_data_future
+            logger.info(f"Market data fetch completed: {'SUCCESS' if market_data else 'FAILED'}")
+            
         except Exception as e:
-            logger.error(f"Data fetch error: {e}")
+            logger.error(f"Data fetch error: {e}", exc_info=True)
             token_info, market_data = None, {}
+        
+        # Log the results
+        logger.info(f"Token info: {token_info}")
+        logger.info(f"Market data: {market_data}")
         
         # Check if we have at least basic token info
         if token_info is None:
@@ -230,9 +305,14 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         # Create combined data dictionary
         combined_data = {**token_info}
         if market_data:
+            logger.info("Merging market data with token info")
             combined_data.update(market_data)
         
+        # Log the combined data
+        logger.info(f"Combined data: {combined_data}")
+        
         # Start screenshot capture in the background
+        logger.info("Starting screenshot capture task")
         screenshot_task = asyncio.create_task(capture_bubblemap(addr, chain))
         
         # Prepare analysis message
@@ -250,22 +330,26 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         decentralization_score = combined_data.get('decentralization_score')
 
         def format_number(value, decimal_places=2, is_price=False):
+            logger.info(f"Formatting number: {value}, is_price={is_price}")
             if value is None:
                 return 'N/A'
             try:
                 if is_price and value < 0.01:
                     return f"${value:,.8f}"
                 return f"${value:,.{decimal_places}f}"
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as e:
+                logger.error(f"Error formatting number {value}: {e}")
                 return 'N/A'
 
         # Format percentages nicely
         def format_percent(value):
+            logger.info(f"Formatting percentage: {value}")
             if value is None:
                 return 'N/A'
             try:
                 return f'{value:.1f}%'
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as e:
+                logger.error(f"Error formatting percentage {value}: {e}")
                 return 'N/A'
 
         # Format the last update time
@@ -275,11 +359,12 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
                 dt = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
                 last_update_str = dt.strftime('%Y-%m-%d %H:%M UTC')
             except Exception as e:
-                logger.error(f"Error formatting date: {e}")
+                logger.error(f"Error formatting date {last_update}: {e}")
                 last_update_str = 'Unknown'
         else:
             last_update_str = 'Unknown'
 
+        logger.info("Building analysis text")
         analysis = (
             f"📊 {token_type} Analysis for {combined_data.get('full_name', 'Unknown')} ({combined_data.get('symbol', 'N/A')})\n\n"
             f"💰 Market Cap: {format_number(market_cap)}\n"
@@ -341,9 +426,11 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
         
         # Wait for screenshot
         try:
+            logger.info("Waiting for screenshot capture to complete")
             screenshot_path = await asyncio.wait_for(screenshot_task, timeout=30)
             
             # Send analysis and bubble map
+            logger.info(f"Sending photo with analysis to user: {update.effective_user.id}")
             await update.message.reply_photo(
                 photo=open(screenshot_path, 'rb'),
                 caption=analysis
@@ -352,6 +439,7 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             # Clean up
             try:
                 os.remove(screenshot_path)
+                logger.info(f"Removed screenshot file: {screenshot_path}")
             except Exception as e:
                 logger.error(f"Error removing screenshot: {e}")
         except asyncio.TimeoutError:
@@ -361,12 +449,13 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
                 text=f"⚠️ Could not generate bubble map visualization\n\n{analysis}"
             )
         except Exception as e:
-            logger.error(f"Screenshot error: {e}")
+            logger.error(f"Screenshot error: {e}", exc_info=True)
             await update.message.reply_text(
                 text=f"⚠️ Could not generate bubble map visualization\n\n{analysis}"
             )
         
         await processing_message.delete()
+        logger.info("Request processing completed successfully")
         
     except Exception as e:
         logger.error(f"Error processing contract address: {e}", exc_info=True)
