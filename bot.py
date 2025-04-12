@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 
 # Important settings for our bot
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')  # Your bot's unique identifier
-BUBBLEMAPS_LEGACY_URL = "https://api-legacy.bubblemaps.io"  # Where we get token data from
+BUBBLEMAPS_API_URL = "https://api-legacy.bubblemaps.io"  # API endpoint
+BUBBLEMAPS_APP_URL = "https://app.bubblemaps.io"  # Web app URL
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Says hello and explains what the bot can do when someone starts a chat"""
@@ -45,7 +46,7 @@ async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
     """Gets all the important information about a token, like who owns it and how it's distributed"""
     async with aiohttp.ClientSession() as session:
         # Get token's metadata first
-        metadata_url = f"{BUBBLEMAPS_LEGACY_URL}/map-metadata?token={contract_address}&chain={chain}"
+        metadata_url = f"{BUBBLEMAPS_API_URL}/map-metadata?token={contract_address}&chain={chain}"
         async with session.get(metadata_url) as response:
             if response.status != 200:
                 return None
@@ -54,7 +55,7 @@ async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
                 return None
 
         # Get detailed token data
-        legacy_url = f"{BUBBLEMAPS_LEGACY_URL}/map-data?token={contract_address}&chain={chain}"
+        legacy_url = f"{BUBBLEMAPS_API_URL}/map-data?token={contract_address}&chain={chain}"
         async with session.get(legacy_url) as response:
             if response.status != 200:
                 return None
@@ -110,7 +111,7 @@ async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
             
             return token_data
 
-async def capture_bubblemap(contract_address: str) -> str:
+async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
     """Takes a picture of the token's bubble map visualization from the website"""
     # Set up Chrome options for headless mode
     options = Options()
@@ -126,7 +127,7 @@ async def capture_bubblemap(contract_address: str) -> str:
         driver = webdriver.Chrome(options=options)
         
         # Visit the token's page and wait for it to load
-        url = f"https://bubblemaps.io/token/{contract_address}"
+        url = f"{BUBBLEMAPS_APP_URL}/{chain}/token/{contract_address}"
         logger.info(f"Loading URL: {url}")
         driver.get(url)
         logger.info("Waiting for page to load...")
@@ -173,7 +174,7 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             return
         
         # Capture bubble map
-        screenshot_path = await capture_bubblemap(contract_address)
+        screenshot_path = await capture_bubblemap(contract_address, chain)
         
         # Prepare analysis message
         token_type = "NFT Collection" if token_info.get('is_nft') else "Token"
@@ -243,7 +244,7 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
                 f"   └ {percentage:.2f}% ({amount:,.0f} tokens)\n"
             )
         
-        analysis += f"\n🔗 View on Bubblemaps: https://bubblemaps.io/token/{contract_address}"
+        analysis += f"\n🔗 View on Bubblemaps: {BUBBLEMAPS_APP_URL}/{chain}/token/{contract_address}"
         
         # Send analysis and bubble map
         await update.message.reply_photo(
