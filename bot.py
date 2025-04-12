@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
@@ -27,6 +28,18 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')  # Your bot's unique identifier
 BUBBLEMAPS_API_URL = "https://api-legacy.bubblemaps.io"  # API endpoint
 BUBBLEMAPS_APP_URL = "https://app.bubblemaps.io"  # Web app URL
+COINGECKO_API_URL = "https://api.coingecko.com/api/v3"  # CoinGecko API
+
+# Chain ID mapping for CoinGecko
+CHAIN_TO_PLATFORM = {
+    'eth': 'ethereum',
+    'bsc': 'binance-smart-chain',
+    'ftm': 'fantom',
+    'avax': 'avalanche',
+    'poly': 'polygon-pos',
+    'arbi': 'arbitrum-one',
+    'base': 'base'
+}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Says hello and explains what the bot can do when someone starts a chat"""
@@ -41,6 +54,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Try it now by sending a contract address!"
     )
     await update.message.reply_text(welcome_message)
+
+async def get_market_data(contract_address: str, chain: str) -> dict:
+    """Get token market data from CoinGecko"""
+    if chain not in CHAIN_TO_PLATFORM:
+        return {}
+        
+    platform = CHAIN_TO_PLATFORM[chain]
+    async with aiohttp.ClientSession() as session:
+        url = f"{COINGECKO_API_URL}/simple/token_price/{platform}/{contract_address}?include_market_cap=true&include_24hr_vol=true&include_24hr_change=true&include_last_updated_at=true"
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return {}
+                data = await response.json()
+                if not data:
+                    return {}
+                    
+                token_data = list(data.values())[0]
+                return {
+                    'price': token_data.get('usd'),
+                    'market_cap': token_data.get('usd_market_cap'),
+                    'volume_24h': token_data.get('usd_24h_vol'),
+                    'price_change_24h': token_data.get('usd_24h_change')
+                }
+        except Exception as e:
+            logger.error(f"Error fetching market data: {e}")
+            return {}
 
 async def get_token_info(contract_address: str, chain: str = 'eth') -> dict:
     """Gets all the important information about a token, like who owns it and how it's distributed"""
@@ -131,7 +171,16 @@ async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
         logger.info(f"Loading URL: {url}")
         driver.get(url)
         logger.info("Waiting for page to load...")
-        driver.implicitly_wait(10)
+        
+        # Wait for specific elements to be visible
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "bubblemaps-canvas"))
+            )
+            # Additional wait to ensure visualization is rendered
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.warning(f"Timeout waiting for elements: {e}")
         
         # Save the bubble map as an image
         screenshot_path = f"bubblemap_{contract_address}.png"
@@ -149,17 +198,23 @@ async def capture_bubblemap(contract_address: str, chain: str = 'eth') -> str:
 
 async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes a user's request to analyze a token and sends back the results"""
-    # Split the message into contract address and blockchain (e.g., 'eth', 'bsc')
+    # Get the contract address from the message
     message_parts = update.message.text.strip().split()
-    contract_address = message_parts[0]
-    chain = message_parts[1] if len(message_parts) > 1 else 'eth'  # Default to Ethereum if not specified
-    
-    # Make sure they specified a valid blockchain
-    valid_chains = ['eth', 'bsc', 'ftm', 'avax', 'cro', 'arbi', 'poly', 'base', 'sol', 'sonic']
-    if chain not in valid_chains:
+    if len(message_parts) < 1:
         await update.message.reply_text(
-            f"❌ Invalid chain. Please use one of: {', '.join(valid_chains)}"
-            f"\nFormat: <contract_address> <chain>"
+            "❌ Please provide a valid contract address.\n"
+            f"Format: <contract_address> <chain>"
+        )
+        return
+    
+    contract_address = message_parts[0].lower()
+    chain = message_parts[1].lower() if len(message_parts) > 1 else 'eth'
+    
+    # Basic validation of the contract address
+    if not contract_address.startswith('0x') or len(contract_address) != 42:
+        await update.message.reply_text(
+            "❌ Invalid contract address format.\n"
+            f"Format: <contract_address> <chain>"
         )
         return
     
@@ -167,21 +222,29 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
     processing_message = await update.message.reply_text("🔍 Analyzing token... Please wait.")
     
     try:
-        # Get token information
-        token_info = await get_token_info(contract_address, chain)
+        # Get token information and market data concurrently
+        token_info, market_data = await asyncio.gather(
+            get_token_info(contract_address, chain),
+            get_market_data(contract_address, chain)
+        )
+        
         if not token_info:
             await processing_message.edit_text("❌ Invalid contract address or token not found on Bubblemaps.")
             return
+        
+        # Merge market data into token info
+        token_info.update(market_data)
         
         # Capture bubble map
         screenshot_path = await capture_bubblemap(contract_address, chain)
         
         # Prepare analysis message
         token_type = "NFT Collection" if token_info.get('is_nft') else "Token"
-        # Format numeric values safely
-        market_cap = token_info.get('marketCap')
+        # Get values from combined data
+        market_cap = token_info.get('market_cap')
         price = token_info.get('price')
-        volume = token_info.get('volume24h')
+        volume = token_info.get('volume_24h')
+        price_change = token_info.get('price_change_24h')
         holder_count = token_info.get('holder_count')
         whale_count = token_info.get('whale_count')
         contract_holdings = token_info.get('contract_holder_percentage')
@@ -218,7 +281,8 @@ async def handle_contract_address(update: Update, context: ContextTypes.DEFAULT_
             f"📊 {token_type} Analysis for {token_info.get('full_name', 'Unknown')} ({token_info.get('symbol', 'N/A')})\n\n"
             f"💰 Market Cap: {format_number(market_cap)}\n"
             f"💵 Price: {format_number(price, is_price=True)}\n"
-            f"📈 24h Volume: {format_number(volume)}\n\n"
+            f"📈 24h Volume: {format_number(volume)}\n"
+            f"📊 24h Change: {f'{price_change:+.2f}%' if price_change else 'N/A'}\n\n"
             f"🎯 Decentralization Metrics:\n"
             f"└ Score: {token_info.get('decentralization_score', 'N/A')}/100\n"
             f"└ Total Holders: {f'{holder_count:,}' if isinstance(holder_count, int) else 'N/A'}\n"
