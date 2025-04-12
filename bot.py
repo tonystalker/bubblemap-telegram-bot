@@ -174,22 +174,23 @@ async def get_token_info(addr: str, chain: str = 'eth') -> dict:
                 if not data:
                     logger.warning(f"Empty data response for {addr}")
                     return None
-                
+
                 result = {
-                    'name': meta.get('name', 'Unknown'),
-                    'symbol': meta.get('symbol', 'N/A'),
-                    'full_name': meta.get('name', 'Unknown'),
-                    'total_supply': meta.get('total_supply'),
-                    'decentralization_score': data.get('decentralization_score'),
-                    'percent_in_cexs': data.get('percent_in_cexs'),
-                    'contract_holder_percentage': data.get('contract_holder_percentage'),
-                    'total_flow': data.get('total_flow'),
-                    'holder_count': data.get('holder_count'),
-                    'whale_count': data.get('whale_count'),
-                    'top_holders': data.get('top_holders', [])[:5],
-                    'last_update': data.get('last_update'),
-                    'is_nft': meta.get('is_nft', False)
-                }
+                           'name': meta.get('name', 'Unknown'),
+                           'symbol': meta.get('symbol', 'N/A'),
+                        'full_name': meta.get('name', 'Unknown'),
+                        'total_supply': meta.get('total_supply'),
+                        'decentralization_score': data.get('decentralization', {}).get('score'),
+                        'percent_in_cexs': data.get('centralization', {}).get('cex_percentage'),
+                        'contract_holder_percentage': data.get('centralization', {}).get('contract_percentage'),
+                        'total_flow': data.get('transaction_flow', {}).get('total'),
+                        'holder_count': data.get('holders', {}).get('total'),
+                        'whale_count': data.get('holders', {}).get('whales'),
+                        'top_holders': data.get('top_holders', [])[:5],
+                        'last_update': data.get('updated_at'),
+                        'is_nft': meta.get('is_nft', False)
+                         }    
+            
                 
                 logger.info(f"Extracted token info: {result}")
                 return result
